@@ -422,6 +422,11 @@ impl EscrowContract {
         if Self::is_paused(&env) {
             return Err(Error::ContractPaused);
         }
+        // Reject a zero stake explicitly before the MIN_STAKE range check so
+        // callers receive a dedicated error code rather than StakeTooLow.
+        if stake_amount == 0 {
+            return Err(Error::InvalidStakeAmount);
+        }
         if stake_amount < MIN_STAKE {
             return Err(Error::StakeTooLow);
         }
@@ -1107,6 +1112,27 @@ impl EscrowContract {
 
         if !Self::is_paused(&env) {
             return Err(Error::NotPaused);
+        }
+
+        // Safety guard: block the drain when any match is currently `Active`
+        // (both players have deposited and the game is in progress). Draining
+        // while funds are locked for active matches would silently steal player
+        // stakes. The admin must wait for every active match to reach a terminal
+        // state — `Completed` (payout done) or `Cancelled` (funds refunded) —
+        // before calling emergency_drain. (#8)
+        let match_count = Self::get_match_count(&env);
+        let mut i: u64 = 0;
+        while i < match_count {
+            if let Some(m) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Match>(&DataKey::Match(i))
+            {
+                if m.state == MatchState::Active {
+                    return Err(Error::ActiveMatchExists);
+                }
+            }
+            i += 1;
         }
 
         let safe_address: Address = env

@@ -161,6 +161,23 @@ pub enum Error {
     /// and so falls back to the default — would fail with no way to recover
     /// short of a contract upgrade.
     CannotRemoveDefault = 31,
+
+    /// [E032] `stake_amount` is exactly zero.
+    ///
+    /// A match staked at zero has no economic value and would produce zero-value
+    /// token transfers. This is a distinct variant from [`StakeTooLow`] (which
+    /// covers values strictly between 0 and `MIN_STAKE`) so callers can
+    /// distinguish "no stake at all" from "stake below the configured minimum".
+    InvalidStakeAmount = 32,
+
+    /// [E033] `emergency_drain()` was called while at least one match is in the
+    /// `Active` state.
+    ///
+    /// Draining while funds are locked for active matches would silently steal
+    /// player stakes. Wait for all in-flight matches to reach a terminal state
+    /// (`Completed` or `Cancelled`) before calling `emergency_drain`.
+    ActiveMatchExists = 33,
+
     /// [E028] `override_result` was called after the dispute window expired.
     DisputeWindowExpired = 28,
 }

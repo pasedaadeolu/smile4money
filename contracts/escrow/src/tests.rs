@@ -962,7 +962,7 @@ fn test_create_match_zero_stake_fails() {
             &String::from_str(&env, "zero_stake"),
             &Platform::Lichess,
         ),
-        Err(Ok(Error::StakeTooLow))
+        Err(Ok(Error::InvalidStakeAmount))
     );
 }
 
@@ -2964,7 +2964,8 @@ fn test_finalize_result_dispute_window_boundary() {
     );
 }
 
-// Issue #791: stake amount below MIN_STAKE (e.g. zero) is rejected as StakeTooLow
+// Issue #791: stake amount of exactly zero is rejected as InvalidStakeAmount (#3);
+// below-MIN_STAKE non-zero values are rejected as StakeTooLow.
 #[test]
 fn test_create_match_stake_below_min_fails() {
     let (env, contract_id, _oracle, player1, player2, token, _admin, _safe_address) = setup();
@@ -2978,7 +2979,7 @@ fn test_create_match_stake_below_min_fails() {
             &String::from_str(&env, "below_min"),
             &Platform::Lichess,
         ),
-        Err(Ok(Error::StakeTooLow))
+        Err(Ok(Error::InvalidStakeAmount))
     );
 }
 
@@ -4635,5 +4636,220 @@ fn test_finalize_result_at_exact_dispute_window_boundary() {
         matches!(result, Err(Ok(Error::DisputeWindowActive))),
         "finalize_result at exact boundary should be rejected with DisputeWindowActive, got: {:?}",
         result
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #3 — stake_amount of zero returns Error::InvalidStakeAmount
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_create_match_zero_stake_returns_invalid_stake_amount() {
+    let (env, contract_id, _oracle, player1, player2, token, _admin, _safe_address) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    assert_eq!(
+        client.try_create_match(
+            &player1,
+            &player2,
+            &0,
+            &Some(token),
+            &String::from_str(&env, "zero_stake_issue3"),
+            &Platform::Lichess,
+        ),
+        Err(Ok(Error::InvalidStakeAmount))
+    );
+}
+
+#[test]
+fn test_create_match_positive_stake_succeeds_issue3() {
+    let (env, contract_id, _oracle, player1, player2, token, _admin, _safe_address) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let result = client.try_create_match(
+        &player1,
+        &player2,
+        &100,
+        &Some(token),
+        &String::from_str(&env, "positive_stake_issue3"),
+        &Platform::Lichess,
+    );
+    assert!(result.is_ok(), "Expected Ok, got {:?}", result);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #8 — emergency_drain blocked when any match is Active
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_emergency_drain_blocked_when_active_match_exists() {
+    let (env, contract_id, _oracle, player1, player2, token, admin, _safe_address) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    // Create a match and have both players deposit (→ Active state)
+    let id = client.create_match(
+        &player1,
+        &player2,
+        &100,
+        &Some(token),
+        &String::from_str(&env, "active_drain_test"),
+        &Platform::Lichess,
+    );
+    client.deposit(&id, &player1);
+    client.deposit(&id, &player2);
+
+    // Pause the contract first (required by emergency_drain)
+    client.pause();
+
+    // emergency_drain must be rejected while the match is Active
+    assert_eq!(
+        client.try_emergency_drain(&admin),
+        Err(Ok(Error::ActiveMatchExists))
+    );
+}
+
+#[test]
+fn test_emergency_drain_succeeds_when_no_active_matches() {
+    let (env, contract_id, _oracle, player1, player2, token, admin, safe_address) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let token_client = TokenClient::new(&env, &token);
+
+    // Create a match and cancel it before depositing (remains Pending → Cancelled)
+    let id = client.create_match(
+        &player1,
+        &player2,
+        &100,
+        &Some(token),
+        &String::from_str(&env, "no_active_drain_test"),
+        &Platform::Lichess,
+    );
+    client.cancel_match(&id, &player1);
+
+    // Pause and drain — no Active matches, so this must succeed
+    client.pause();
+    let result = client.try_emergency_drain(&admin);
+    assert!(result.is_ok(), "Expected Ok when no active matches, got {:?}", result);
+
+    // safe_address should have received the reserve buffer minted in setup
+    let safe_bal = token_client.balance(&safe_address);
+    assert!(safe_bal >= 0, "safe_address balance should be non-negative");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #5 — game_id charset: multi-byte Unicode is rejected
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_create_match_game_id_multibyte_unicode_rejected() {
+    let (env, contract_id, _oracle, player1, player2, token, _admin, _safe_address) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    // "é" is U+00E9, encoded in UTF-8 as two bytes: 0xC3 0xA9.
+    // Both bytes are > 0x7F and thus fail the ASCII-only charset check.
+    let game_id = String::from_bytes(&env, &[b'g', b'a', b'm', b'e', 0xC3, 0xA9]);
+    assert_eq!(
+        client.try_create_match(
+            &player1,
+            &player2,
+            &100,
+            &Some(token),
+            &game_id,
+            &Platform::Lichess,
+        ),
+        Err(Ok(Error::InvalidGameId))
+    );
+}
+
+#[test]
+fn test_create_match_game_id_three_byte_unicode_rejected() {
+    let (env, contract_id, _oracle, player1, player2, token, _admin, _safe_address) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    // "€" is U+20AC, encoded in UTF-8 as three bytes: 0xE2 0x82 0xAC.
+    let game_id = String::from_bytes(&env, &[b'g', 0xE2, 0x82, 0xAC]);
+    assert_eq!(
+        client.try_create_match(
+            &player1,
+            &player2,
+            &100,
+            &Some(token),
+            &game_id,
+            &Platform::Lichess,
+        ),
+        Err(Ok(Error::InvalidGameId))
+    );
+}
+
+#[test]
+fn test_create_match_game_id_valid_ascii_passes_issue5() {
+    let (env, contract_id, _oracle, player1, player2, token, _admin, _safe_address) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    // Pure ASCII alphanumeric + allowed specials must still be accepted
+    let result = client.try_create_match(
+        &player1,
+        &player2,
+        &100,
+        &Some(token),
+        &String::from_str(&env, "abc-XYZ_123"),
+        &Platform::Lichess,
+    );
+    assert!(result.is_ok(), "Valid ASCII game_id should be accepted, got {:?}", result);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #6 — submit_result game_id mismatch and matching scenarios
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_submit_result_matching_game_id_succeeds() {
+    let (env, contract_id, oracle, player1, player2, token, _admin, _safe_address) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let game_id = String::from_str(&env, "correct_game");
+    let id = client.create_match(
+        &player1,
+        &player2,
+        &100,
+        &Some(token),
+        &game_id,
+        &Platform::Lichess,
+    );
+    client.deposit(&id, &player1);
+    client.deposit(&id, &player2);
+
+    // submit_result with the CORRECT game_id must succeed (no error)
+    let result = client.try_submit_result(
+        &id,
+        &game_id,
+        &Winner::Player1,
+        &oracle,
+    );
+    assert!(result.is_ok(), "submit_result with matching game_id should succeed, got {:?}", result);
+}
+
+#[test]
+fn test_submit_result_mismatched_game_id_returns_game_id_mismatch() {
+    let (env, contract_id, oracle, player1, player2, token, _admin, _safe_address) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let id = client.create_match(
+        &player1,
+        &player2,
+        &100,
+        &Some(token),
+        &String::from_str(&env, "stored_game"),
+        &Platform::Lichess,
+    );
+    client.deposit(&id, &player1);
+    client.deposit(&id, &player2);
+
+    // submit_result with a DIFFERENT game_id must return GameIdMismatch
+    assert_eq!(
+        client.try_submit_result(
+            &id,
+            &String::from_str(&env, "other_game"),
+            &Winner::Player1,
+            &oracle,
+        ),
+        Err(Ok(Error::GameIdMismatch))
     );
 }

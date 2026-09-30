@@ -137,7 +137,7 @@ proptest! {
         );
     }
 
-    /// Test that stakes below MIN_STAKE are rejected with StakeTooLow
+    /// Test that stakes below MIN_STAKE are rejected with StakeTooLow or InvalidStakeAmount
     #[test]
     fn prop_stake_below_minimum(stake in invalid_low_stake_strategy()) {
         let fixture = FuzzTestFixture::setup();
@@ -153,9 +153,10 @@ proptest! {
             &Platform::Lichess,
         );
 
+        // Zero stake returns InvalidStakeAmount (#3); other sub-minimum values return StakeTooLow.
         prop_assert!(
-            matches!(result, Err(Ok(Error::StakeTooLow))),
-            "create_match should reject stake {} < MIN_STAKE with StakeTooLow",
+            matches!(result, Err(Ok(Error::StakeTooLow)) | Err(Ok(Error::InvalidStakeAmount))),
+            "create_match should reject stake {} < MIN_STAKE with StakeTooLow or InvalidStakeAmount",
             stake
         );
     }

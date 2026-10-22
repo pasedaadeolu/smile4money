@@ -11,6 +11,7 @@ use soroban_sdk::{testutils::Address as _, Address, Env};
 struct Fixture {
     env: Env,
     client: LeaderboardContractClient<'static>,
+    contract_id: Address,
     admin: Address,
     source: Address,
     player1: Address,
@@ -32,7 +33,7 @@ fn setup() -> Fixture {
     let client = LeaderboardContractClient::new(&env, &id);
     client.initialize(&admin, &source);
 
-    Fixture { env, client, admin, source, player1, player2, token }
+    Fixture { env, client, contract_id: id, admin, source, player1, player2, token }
 }
 
 fn record(f: &Fixture, outcome: MatchOutcome, payout: i128, p1: &Address, p2: &Address) {
@@ -131,8 +132,8 @@ fn matches_played_sums_all_three_counters() {
     record(&f, MatchOutcome::Player1Won, 10, &f.player1, &f.player2);
     record(&f, MatchOutcome::Player1Won, 10, &f.player1, &f.player2);
     record(&f, MatchOutcome::Draw, 0, &f.player1, &f.player2);
-    assert_eq!(f.client.get_stats(&f.player1).matches_played(), 3);
-    assert_eq!(f.client.get_stats(&f.player2).matches_played(), 3);
+    assert_eq!(f.client.get_stats(&f.player1).matches_played(), Some(3));
+    assert_eq!(f.client.get_stats(&f.player2).matches_played(), Some(3));
 }
 
 #[test]
@@ -288,6 +289,98 @@ fn result_count_increments_per_result() {
     assert_eq!(f.client.result_count(), 1);
     record(&f, MatchOutcome::Draw, 0, &f.player1, &f.player2);
     assert_eq!(f.client.result_count(), 2);
+}
+
+#[test]
+fn result_recording_rejects_counter_overflow() {
+    let f = setup();
+    f.env.as_contract(&f.contract_id, || {
+        f.env.storage().persistent().set(
+            &DataKey::Stats(f.player1.clone()),
+            &PlayerStats {
+                wins: u32::MAX,
+                losses: 0,
+                draws: 0,
+                earnings: 0,
+                token: f.token.clone(),
+            },
+        );
+    });
+
+    assert_eq!(
+        f.client.try_record_result(
+            &f.player1,
+            &f.player2,
+            &MatchOutcome::Player1Won,
+            &1,
+            &f.token,
+            &f.source,
+        ),
+        Err(Ok(Error::Overflow))
+    );
+}
+
+#[test]
+fn result_recording_rejects_earnings_overflow() {
+    let f = setup();
+    f.env.as_contract(&f.contract_id, || {
+        f.env.storage().persistent().set(
+            &DataKey::Stats(f.player1.clone()),
+            &PlayerStats {
+                wins: 0,
+                losses: 0,
+                draws: 0,
+                earnings: i128::MAX,
+                token: f.token.clone(),
+            },
+        );
+    });
+
+    assert_eq!(
+        f.client.try_record_result(
+            &f.player1,
+            &f.player2,
+            &MatchOutcome::Player1Won,
+            &1,
+            &f.token,
+            &f.source,
+        ),
+        Err(Ok(Error::Overflow))
+    );
+}
+
+#[test]
+fn result_recording_rejects_result_count_overflow() {
+    let f = setup();
+    f.env.as_contract(&f.contract_id, || {
+        f.env.storage().instance().set(&DataKey::ResultCount, &u32::MAX);
+    });
+
+    assert_eq!(
+        f.client.try_record_result(
+            &f.player1,
+            &f.player2,
+            &MatchOutcome::Player1Won,
+            &1,
+            &f.token,
+            &f.source,
+        ),
+        Err(Ok(Error::Overflow))
+    );
+}
+
+#[test]
+fn matches_played_detects_overflow() {
+    let f = setup();
+    let stats = PlayerStats {
+        wins: u32::MAX,
+        losses: 1,
+        draws: 0,
+        earnings: 0,
+        token: f.token,
+    };
+
+    assert_eq!(stats.matches_played(), None);
 }
 
 #[test]

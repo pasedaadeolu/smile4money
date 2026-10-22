@@ -10,6 +10,7 @@ use soroban_sdk::{contracterror, contracttype, Address};
 /// |  4   | InvalidResult    | Result is not a recognised variant             |
 /// |  5   | InvalidRange     | `limit` is zero or the page offset is past the end |
 /// |  6   | ContractPaused   | Result recording is paused                     |
+/// |  7   | Overflow         | A leaderboard aggregate exceeds its integer range |
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -30,6 +31,9 @@ pub enum Error {
 
     /// [E006] Result recording is paused.
     ContractPaused = 6,
+
+    /// [E007] A leaderboard aggregate exceeds its integer range.
+    Overflow = 7,
 }
 
 /// The outcome of a single match, as reported by the escrow contract.
@@ -83,8 +87,10 @@ impl PlayerStats {
     }
 
     /// Total completed matches this player took part in.
-    pub fn matches_played(&self) -> u32 {
-        self.wins + self.losses + self.draws
+    pub fn matches_played(&self) -> Option<u32> {
+        self.wins
+            .checked_add(self.losses)?
+            .checked_add(self.draws)
     }
 }
 
